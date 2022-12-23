@@ -1,0 +1,182 @@
+#--------------------------------------------------------------------
+# START GLOBAL VARIABLES
+#
+
+# Ceph cluster node hostnames/IP addresses
+ADMINhostname="f28-h21-000-r630.rdu2.scalelab.redhat.com"
+MONhostname="f28-h21-000-r630.rdu2.scalelab.redhat.com"
+MONhostname2="f28-h28-000-r630.rdu2.scalelab.redhat.com"
+RGWhostname="f22-h01-000-6048r"
+RGWhostname2="f22-h21-000-6048r"
+RGWhosts1="f22-h01-000-6048r f22-h05-000-6048r f22-h09-000-6048r f22-h13-000-6048r f23-h05-000-6048r f23-h09-000-6048r f23-h13-000-6048r f23-h17-000-6048r"
+RGWhosts2="f22-h21-000-6048r f22-h25-000-6048r f22-h29-000-6048r f23-h01-000-6048r f27-h13-000-6048r f27-h17-000-6048r f27-h21-000-6048r f27-h25-000-6048r"
+drivers="f24-h19-000-r630 f25-h32-000-r630 f25-h33-000-r630 f28-h21-000-r630 f28-h22-000-r630 f28-h23-000-r630"
+warpHosts="172.16.44.156:5000,172.16.45.122:5000,172.16.45.16:5000,172.16.44.97:5000,172.16.44.88:5000,172.16.44.89:5000"
+warpClients=("172.16.44.156:8001,172.16.45.122:8001,172.16.45.16:8001,172.16.44.97:8001,172.16.44.88:8001,172.16.44.89:8001" "172.16.44.156:8002,172.16.45.122:8002,172.16.45.16:8002,172.16.44.97:8002,172.16.44.88:8002,172.16.44.89:8002" "172.16.44.156:8003,172.16.45.122:8003,172.16.45.16:8003,172.16.44.97:8003,172.16.44.88:8003,172.16.44.89:8003" "172.16.44.156:8004,172.16.45.122:8004,172.16.45.16:8004,172.16.44.97:8004,172.16.44.88:8004,172.16.44.89:8004" "172.16.44.156:8005,172.16.45.122:8005,172.16.45.16:8005,172.16.44.97:8005,172.16.44.88:8005,172.16.44.89:8005" "172.16.44.156:8006,172.16.45.122:8006,172.16.45.16:8006,172.16.44.97:8006,172.16.44.88:8006,172.16.44.89:8006")
+
+duration=420m0s		# warp runtime
+concurrent=1		# concurrent operations (default: 20)
+#putdist=35		# distribution of PUT ops (default: 15)
+#getdist=45		# distribution of GET ops (default: 45)
+#statdist=15		# distribution of STAT ops (default: 30)
+#deletedist=5		# distribution of DELETE ops, must be at >= putdist (default: 10)
+putdist=16		# distribution of PUT ops (default: 15)
+getdist=60		# distribution of GET ops (default: 45)
+statdist=10		# distribution of STAT ops (default: 30)
+deletedist=14		# distribution of DELETE ops, must be at >= putdist (default: 10)
+objects=10000		# object count
+objsize=512MiB		# generic object size
+hostSelect=roundrobin	# "weighed" or "roundrobin" (default: "weighed")
+numCONT=6		# number of containers (buckets)
+storagetype=s3          # must be 's3' OR 'swift'
+preparePTYPE=ec		# must be 'rep' (replicated) OR 'ec' (erasure coded) for data pool
+pollinterval=300	# interval must be INT for use with multiplier
+cephadmshell=false	# expects to execute within a cephadm shell env
+multisite=false		# enable/disable multisite monitoring
+syncPolling=false	# enable/disable sync monitoring
+dataLogPolling=false	# enable/disable data log list poll
+bsV2Polling=false	# enable/disable bluestore-V2 perf polling
+disabledeepscrubs=false # disable deep-scrubs during workload & part of post-poll
+pollmultiplier=2	# data log list polling = pollinterval * pollmultiplier
+postPolling=false	# enable/disable extended post job poll
+postpollinterval=900	# post poller interval
+# postpoll settings
+#postpollend=$((SECONDS+108000))	# 30 hrs
+#postpollend=$((SECONDS+21600))		# 6 hrs
+postpollend=$((SECONDS+7200))		# 2 hrs
+#scrubstart=$((SECONDS+43200))		# 12 hrs
+scrubstart=$((SECONDS+7200))		# 2 hrs
+#scrubstart=$((SECONDS+3600))		# 1 hr
+
+# lowercase all alphas in vars
+storagetype=`echo "${storagetype,,}"`
+cephadmshell=`echo "${cephadmshell,,}"`
+preparePTYPE=`echo "${preparePTYPE,,}"`
+multisite=`echo "${multisite,,}"`
+syncPolling=`echo "${syncPolling,,}"`
+dataLogPolling=`echo "${dataLogPolling,,}"`
+bsV2Polling=`echo "${bsV2Polling,,}"`
+disabledeepscrubs=`echo "${disabledeepscrubs,,}"`
+postPolling=`echo "${postPolling,,}"`
+
+# get RGW user keys
+access=`radosgw-admin user info --uid=johndoe |jq .keys[].access_key | tr -d '"'`
+secret=`radosgw-admin user info --uid=johndoe |jq .keys[].secret_key | tr -d '"'`
+if [[ -z "$access" || -z "$secret" ]]; then
+  echo "var.shinc: No access and/or secret key found for user johndoe"
+#  exit
+fi
+
+#------------------------
+# resetRGW.sh variables
+longPAUSE="400s"
+if [ $multisite != "true" ]; then
+  pool_list=("default.rgw.control" "default.rgw.log" "default.rgw.meta" \
+            "default.rgw.buckets.index" "default.rgw.buckets.data")
+else
+  pool_list=("site2.rgw.control" "site2.rgw.log" "site2.rgw.meta" \
+            "site2.rgw.buckets.index" "site2.rgw.buckets.data")
+fi
+numREPLICAS=3				# how many replicas in replicated pools
+if [ $preparePTYPE == "rep" ]; then
+    REPLICATION="rep"
+    k=0
+    m=0
+    pg_data=2048                       	# determine this value using PGCALC
+    pg_index=64                        	# determine this value using PGCALC
+    pg=64                              	# determine this value using PGCALC
+    fast_read=0
+elif [ $preparePTYPE == "ec" ]; then
+    REPLICATION="ec"
+    k=4
+    m=2
+    pg_data=4096                       	# determine this value using PGCALC
+    pg_index=256                       	# determine this value using PGCALC
+    pg=128                             	# determine this value using PGCALC
+    fast_read=0
+else
+    echo "Pool type (preparePTYPE) needs to be defined in vars.shinc"; exit
+fi
+
+#------------------------
+# runIOworkload.sh vars
+
+# ceph version (lowercase): Jewel, Luminous, Nautilus, ...
+CEPHVER=$($execMON ceph version | awk '{print $(NF-1) }' | sed 's/[A-Z]/\L&/g')
+
+# Timestamp logfiles
+#ts="$(date +%Y%m%d-%H%M%S)"
+ts="$(date +%y%m%d-%H%M)"
+
+# Name of the program being run
+PROGNAME=$(basename -- $0)
+
+# LOGFILE - records steps
+RESULTSDIR="./RESULTS"
+TMPfile="/tmp/jobId.tmp"
+LOGFILE="${RESULTSDIR}/${PROGNAME}_${ts}.log"
+DATALOG="${RESULTSDIR}/${PROGNAME}_dataLog_${ts}.log"
+PGDUMPPRE="${RESULTSDIR}/${PROGNAME}_pgdump-pre_${ts}.log"
+PGDUMPPOST="${RESULTSDIR}/${PROGNAME}_pgdump-post_${ts}.log"
+POOLDETAIL="${RESULTSDIR}/${PROGNAME}_poolDetails_${ts}.log"
+OSDDIFF="${RESULTSDIR}/OSDdiff_${ts}.log"
+RGWDIFF="${RESULTSDIR}/RGWdiff_${ts}.log"
+MONDIFF="${RESULTSDIR}/MONdiff_${ts}.log"
+MGRDIFF="${RESULTSDIR}/MGRdiff_${ts}.log"
+
+# Logfile date format, customize it to your wishes
+#   - see man date for help
+DATE='date +%Y/%m/%d-%H:%M:%S'
+
+# Temp dir for holding OSD stats
+TMPdir="$RESULTSDIR/TMPDIR${PROGNAME}_${ts}"
+
+#------------------------
+# Determine runmode: either bare-metal or containerized
+#   defines values for execMON, execRGW and runmode global vars
+#   all Ceph cmds (ceph, radsogw-admin) are prefix'd with execMON or execRGW
+runmode="invalid"
+# verify if ceph is functioning: passes on bare-metal and containerized
+ret1=`ssh $MONhostname ceph health detail &>/dev/null ; echo $?`
+if [ $ret1 -eq 0 ] ; then
+    execMON="ssh $MONhostname "
+    execMON2="ssh $MONhostname2 "
+    execRGW="ssh $RGWhostname "
+    execRGW2="ssh $RGWhostname2 "
+    runmode="baremetal"
+fi
+# if MONhost has 'podman' cmd and running ceph-mon container, runmode is containerized
+fsid=`ceph status |grep id: |awk '{print$2}'`
+ret2=`ssh $MONhostname hash podman &>/dev/null ; echo $?`
+if [ $ret2 -eq 0 ]; then
+    ret3=`ssh $MONhostname podman ps --filter "name=ceph"|grep mon|grep -v ID &>/dev/null ; echo $?`
+    if [ $ret3 -eq 0 ]; then
+	monpodname=`ssh $MONhostname podman ps|grep mon|awk '{print$NF}'`
+#        execMON="ssh $MONhostname podman exec $monpodname  "
+	 execMON="ssh $MONhostname "
+	rgwpodname=`ssh $RGWhostname podman ps|grep rgw|awk '{print$NF}'`
+        execRGW="ssh $RGWhostname podman exec $rgwpodname  "
+	if [[ $multisite == "true" ]]; then
+	    monpodname2=`ssh $MONhostname2 podman ps|grep mon|awk '{print$NF}'`
+            #execMON2="ssh $MONhostname2 podman exec -it $monpodname2 "
+            execMON2="ssh $MONhostname2 "
+	    rgwpodname2=`ssh $RGWhostname2 podman ps|grep rgw|awk '{print$NF}'`
+            #execRGW2="ssh $RGWhostname2 podman exec -it $rgwpodname2 "
+            execRGW2="ssh $RGWhostname2 podman exec -it $rgwpodname2 "
+        fi
+        runmode="containerized"
+    fi
+fi
+echo "runmode is $runmode"        # DEBUG
+
+if [ $runmode == "invalid" ]; then
+    echo "vars.shinc: unable to determine runmode(bare-metal or containerized)"
+    echo "Aborting..."
+    exit 2
+fi
+
+#CEPH_VERSION=`$execMON ceph version`  # used in: resetRGW.sh, functions.shinc and poll.sh 
+CEPH_VERSION=`ceph version`  # used in: resetRGW.sh, functions.shinc and poll.sh 
+
+# END GLOBAL VARIABLES
+#--------------------------------------------------------------------

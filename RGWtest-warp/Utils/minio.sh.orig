@@ -1,0 +1,194 @@
+#!/bin/bash
+EXPECTED_ARGS=2
+if [ $# -eq $EXPECTED_ARGS ] ; then
+  operation=$1
+  log=$2
+else
+  echo "Usage: $(basename $0) {fill,hybrid-new,hybrid-48hr,hybrid-aged,delwrite} <logfile>"
+  exit 1
+fi
+
+# Bring in other script files
+myPath="${BASH_SOURCE%/*}"
+if [[ ! -d "$myPath" ]]; then
+    myPath="$PWD"
+fi
+
+# Variables
+source "$myPath/../vars.shinc"
+
+# Functions
+source "$myPath/../Utils/functions.shinc"
+
+# timestamp for output files
+ts=`date +'%y%m%d-%H%M'`
+
+# Start warp clients 
+#./Utils/start-clients.sh ${numCONT}
+#echo "Starting clients for $operation"
+#sleep 10
+
+# Execute warp job
+case $operation in
+    fill)
+	for i in `seq ${numCONT}` ; do
+#            warp put --obj.size $objsize --obj.randsize  --objects=$objects  \
+            warp put --obj.size $objsize --duration=$duration --concurrent=$concurrent \
+             --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts \
+	     --access-key=$access --secret-key=$secret --obj.randsize \
+	     --bucket bucket${i} --benchdata ${ts}_${operation}-${i} \
+             --noclear --no-color --debug &> ${ts}_warp${i}.out &
+	done
+
+        # add commands syntax to log
+	sleep 10
+        echo -e "\nWarp put commands:" > /tmp/anaylize.out
+        #pgrep -a warp |grep -v client >> /tmp/anaylize.out
+        #while [[ `pgrep -a warp |grep -v client` ]] ; do sleep 5 ; done
+        pgrep -a warp >> /tmp/anaylize.out
+        while [[ `pgrep -a warp` ]] ; do sleep 10 ; done
+
+        # add the output of each run to log
+        echo -en "\nWarp output:" >> /tmp/anaylize.out
+        for i in `seq ${numCONT}` ; do
+            echo -e "\nBucket${i}" >> /tmp/anaylize.out
+            warp analyze ${ts}_${operation}-${i}.csv.zst --no-color >> /tmp/anaylize.out
+        done
+        sed -i -e '/\[2K/d' -e '/Done!/d' /tmp/anaylize.out	# remove garbage lines (e.g., ^[,^M)
+	cat /tmp/anaylize.out >> $log
+        echo "" >> $log
+
+        # aggregate the individual run totals and append to log
+        echo -e "\n==========================\nOperation Totals:" >> $log
+        grep -A1 PUT $log | grep Average | awk 'BEGIN {printf("%s","PUT: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        echo -e "==========================\n" >> $log
+      ;;
+    hybrid-new|hybrid-aged)
+	for i in `seq 3` ; do
+            warp mixed --duration=1h --concurrent=$concurrent --put-distrib $putdist \
+             --delete-distrib $deletedist --get-distrib 0 --stat-distrib 0 \
+             --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts --access-key=$access \
+             --secret-key=$secret --obj.size $objsize --obj.randsize --bucket bucket${i} \
+             --benchdata ${ts}_${operation}-${i} --noclear --no-color --debug &> ${ts}_warp${i}.out &
+	done
+
+	for i in `seq 4 ${numCONT}` ; do
+            warp mixed --duration=1h --concurrent=$concurrent --put-distrib 0 \
+             --delete-distrib 0 --get-distrib $getdist --stat-distrib $statdist \
+             --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts --access-key=$access \
+             --secret-key=$secret --obj.size $objsize --obj.randsize --bucket bucket${i} \
+             --benchdata ${ts}_${operation}-${i} --noclear --no-color &> ${ts}_warp${i}.out &
+	done
+
+        # add commands syntax to log
+	sleep 10
+        echo -e "\nWarp mixed commands:" > /tmp/anaylize.out
+        #pgrep -a warp |grep -v client >> /tmp/anaylize.out
+        #while [[ `pgrep -a warp |grep -v client` ]] ; do sleep 5 ; done
+        pgrep -a warp >> /tmp/anaylize.out
+        while [[ `pgrep -a warp` ]] ; do sleep 10 ; done
+
+        # add the output of each run to log
+        echo -en "\nWarp output:" >> /tmp/anaylize.out
+        for i in `seq ${numCONT}` ; do
+            echo -e "\nBucket${i}" >> /tmp/anaylize.out
+            warp analyze ${ts}_${operation}-${i}.csv.zst --no-color >> /tmp/anaylize.out
+        done
+        sed -i -e '/\[2K/d' -e '/Done!/d' /tmp/anaylize.out	# remove garbage lines (e.g., ^[,^M)
+	cat /tmp/anaylize.out >> $log
+        echo "" >> $log
+
+        # aggregate the individual run totals and append to log
+        echo -e "\n==================================\nWarp Operation Totals:" >> $log
+        grep -A1 DELETE $log |grep Thro | awk 'BEGIN {printf("%s","DELETE: ")}{sum+=$3}END{print sum" "$4}' >> $log
+        grep -A1 GET $log | grep Thro | awk 'BEGIN {printf("%s", "GET: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        grep -A1 STAT $log | grep Thro | awk 'BEGIN {printf("%s","STAT: ")}{sum+=$3}END{print sum" "$4}' >> $log
+        grep -A1 PUT $log | grep Thro | awk 'BEGIN {printf("%s","PUT: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        grep Total: $log | awk 'BEGIN {printf("%s","Cluster Totals: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        echo -e "==================================\n" >> $log
+        ;;
+    hybrid-48hr)
+	for i in `seq 3` ; do
+            warp mixed --duration=48h --concurrent=$concurrent --put-distrib $putdist \
+             --delete-distrib $deletedist --get-distrib 0 --stat-distrib 0 \
+             --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts --access-key=$access \
+             --secret-key=$secret --obj.size $objsize --obj.randsize --bucket bucket${i} \
+             --benchdata ${ts}_${operation}-${i} --noclear --no-color --debug &> ${ts}_warp${i}.out &
+	done
+	for i in `seq 4 ${numCONT}` ; do
+            warp mixed --duration=48h --concurrent=$concurrent --put-distrib 0 \
+             --delete-distrib 0 --get-distrib $getdist --stat-distrib $statdist \
+             --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts --access-key=$access \
+             --secret-key=$secret --obj.size $objsize --obj.randsize --bucket bucket${i} \
+             --benchdata ${ts}_${operation}-${i} --noclear --no-color &> ${ts}_warp${i}.out &
+	done
+
+        # add commands syntax to log
+	sleep 10
+        echo -e "\nWarp mixed commands:" > /tmp/anaylize.out
+        #pgrep -a warp |grep -v client >> /tmp/anaylize.out
+        #while [[ `pgrep -a warp |grep -v client` ]] ; do sleep 5 ; done
+        pgrep -a warp >> /tmp/anaylize.out
+        while [[ `pgrep -a warp` ]] ; do sleep 10 ; done	# wait for warp jobs to complete
+
+        # add the output of each run to log
+        echo -en "\nWarp output:" >> /tmp/anaylize.out
+        for i in `seq ${numCONT}` ; do
+            echo -e "\nBucket${i}" >> /tmp/anaylize.out
+            warp analyze ${ts}_${operation}-${i}.csv.zst --no-color >> /tmp/anaylize.out
+        done
+        sed -i -e '/\[2K/d' -e '/Done!/d' /tmp/anaylize.out	# remove garbage lines (e.g., ^[,^M)
+	cat /tmp/anaylize.out >> $log
+        echo "" >> $log
+
+        # aggregate the individual run totals and append to log
+        echo -e "\n==================================\nWarp Operation Totals:" >> $log
+        grep -A1 DELETE $log |grep Thro | awk 'BEGIN {printf("%s","DELETE: ")}{sum+=$3}END{print sum" "$4}' >> $log
+        grep -A1 GET $log | grep Thro | awk 'BEGIN {printf("%s", "GET: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        grep -A1 STAT $log | grep Thro | awk 'BEGIN {printf("%s","STAT: ")}{sum+=$3}END{print sum" "$4}' >> $log
+        grep -A1 PUT $log | grep Thro | awk 'BEGIN {printf("%s","PUT: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        grep Total: $log | awk 'BEGIN {printf("%s","Cluster Totals: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        echo -e "==================================\n" >> $log
+        ;;
+    delwrite)
+	for i in `seq ${numCONT}` ; do
+#            warp mixed --duration=$duration --concurrent=$concurrent --put-distrib 80 \
+            warp mixed --duration=2h --concurrent=$concurrent --obj.size $objsize \
+	     --put-distrib 80 --delete-distrib 20 --get-distrib 0 --stat-distrib 0 \
+	     --warp-client=${warpClients[$(($i-1))]} --host=$warpHosts --access-key=$access \
+	     --secret-key=$secret --obj.randsize --bucket bucket${i} \
+	     --benchdata ${ts}_delwrite${i} --noclear --no-color --debug &> ${ts}_warp${i}.out &
+	done
+
+        # add commands syntax to log
+	sleep 10
+        echo -e "\nWarp mixed commands:" > /tmp/anaylize.out
+        #pgrep -a warp |grep -v client >> /tmp/anaylize.out
+        #while [[ `pgrep -a warp |grep -v client` ]] ; do sleep 5 ; done
+        pgrep -a warp >> /tmp/anaylize.out
+        while [[ `pgrep -a warp` ]] ; do sleep 10 ; done
+
+        # add the output of each run to log
+        echo -en "\nWarp output:" >> /tmp/anaylize.out
+        for i in `seq ${numCONT}` ; do
+            echo -e "\nBucket${i}" >> /tmp/anaylize.out
+            warp analyze ${ts}_delwrite${i}.csv.zst --no-color >> /tmp/anaylize.out
+        done
+        sed -i -e '/\[2K/d' -e '/Done!/d' /tmp/anaylize.out	# remove garbage lines (e.g., ^[,^M)
+	cat /tmp/anaylize.out >> $log
+        echo "" >> $log
+
+        # aggregate the individual run totals and append to log
+        echo -e "\n==================================\nWarp Operation Totals:" >> $log
+        grep -A1 PUT $log | grep Thro | awk 'BEGIN {printf("%s","PUT: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        grep -A1 DELETE $log |grep Thro | awk 'BEGIN {printf("%s","DELETE: ")}{sum+=$3}END{print sum" "$4}' >> $log
+        grep Total: $log | awk 'BEGIN {printf("%s","Cluster Totals: ")}{sum+=$3;sum1+=$5}END{print sum" "$4sum1" "$6}' >> $log
+        echo -e "==================================\n" >> $log
+        ;;
+    *)
+        echo "Invalid warp operation provided, exit..."
+        ;;
+esac
+
+# Stop warp clients
+#ansible -m command -a "killall warp &> /dev/null" drivers &> /dev/null
